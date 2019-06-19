@@ -154,3 +154,103 @@ __kernel void mapLut(__global __const uchar * src, const int srcStep,
     uint ires = (uint)convert_int_rte(res);
     dst[mad24(y, srcStep, x )] = convert_uchar(clamp(ires, (uint)0, (uint)255));
 }
+
+__kernel void rgb2hsv(__global __const uchar * src, const int srcStep, __global uchar * dst,const int cols, const int rows)
+{
+    const int x = get_global_id(0);
+    const int y = get_global_id(1);
+
+    if (x >= cols || y >= rows)
+        return;
+	
+	int idx=mad24(y,srcStep*3,x); 
+	const int r = src[idx];
+	const int g=src[idx+1];
+	const int b=src[idx+2];
+	const float scale=255.f/360.f; 
+	
+	float h,s,v; 
+	const int maxv=max(r,max(g,b)); 
+	const int minv=min(r,min(g,b)); 
+	const int delt=maxv-minv; 
+	const float fDelt=60.0f/delt; 
+	
+	if(maxv==0)
+		s=0;
+	else 
+		s=delt/maxv; 
+	
+	v=maxv; 
+	if (maxv==minv)
+		h=0; 
+	else if(maxv==r)
+		h=(g-b)*fDelt;
+	else if(maxv==g)
+		h=(b-r)*fDelt+120.f;
+	else if(maxv==b)
+		h=(r-g)*fDelt+240.0f; 
+	if(h<0) 
+		h+=360.f; 
+	
+	dst[idx]=convert_uchar(h*scale); 
+	dst[idx+1]=convert_uchar(s*255.0f*0.8f); 
+	dst[idx+2]=convert_uchar(v); 
+	
+}
+
+__kernel void hsv2rgb(__global __const uchar* src, const int srcStep,__global uchar* dst,const int cols, const int rows )
+{
+	const int tidx=get_global_id(0);
+	const int tidy=get_global_id(1); 
+	
+	if(tidx>=cols || tidy>=rows)
+		return; 
+	
+	int idx=mad24(tidy,srcStep*3,tidx); 
+	const float H =convert_float(src[idx]);
+	const float S =convert_float(src[idx+1]);
+	const float V=convert_float(src[idx+2]);
+	const float scale=1.412f; 
+	
+
+	float _h = H*scale/60.f;
+	float s=S/255.f; 
+	float v=V/255.f; 
+	float R,G,B; 
+
+
+    int _hf = (int)floor(_h); 
+    int _hi = ((int)_h)%6; 
+    float _f = _h - _hf; 
+    
+    float _p = v* (1. -s); 
+    float _q = v* (1. - _f *s); 
+    float _t = v* (1. - (1. - _f)*s); 
+    
+    switch (_hi) 
+    { 
+      case 0: 
+	      R = 255.*v; G = 255.*_t; B = 255.*_p; 
+      break; 
+      case 1: 
+	      R = 255.*_q; G = 255.*v; B = 255.*_p; 
+      break; 
+      case 2: 
+	      R = 255.*_p; G = 255.*v; B = 255.*_t; 
+      break; 
+      case 3: 
+	      R = 255.*_p; G = 255.*_q; B = 255.*v; 
+      break; 
+      case 4: 
+	      R = 255.*_t; G = 255.*_p; B = 255.*v; 
+      break; 
+      case 5: 
+	      R = 255.*V; G = 255.*_p; B = 255.*_q; 
+      break; 
+    } 
+	
+	dst[idx]=convert_uchar(R);
+	dst[idx+1]=convert_uchar(G);
+	dst[idx+2]=convert_uchar(B); 
+}
+	
