@@ -59,6 +59,7 @@ inline int reduce(__local volatile int* smem, int val, int tid)
     return val;
 }
 
+
 __kernel void calLut(__global __const uchar * src, const int srcStep,
                       __global uchar * lut,
                       const int2 tileSize, const int2 tiles,
@@ -82,7 +83,6 @@ __kernel void calLut(__global __const uchar * src, const int srcStep,
         }
     }
     barrier(CLK_LOCAL_MEM_FENCE);
-
     int tHistVal = smem[tid];
     barrier(CLK_LOCAL_MEM_FENCE);
 
@@ -100,18 +100,11 @@ __kernel void calLut(__global __const uchar * src, const int srcStep,
     int residual = clipped - redistBatch * 256;
 	if(tid<residual)	
 		++tHistVal;
-
-	//printf("tid:%d,tHistV%d\t",tid,tHistVal); 
     const int lutVal = calc_lut(smem, tHistVal, tid);
-
 	int area=tileSize.x*tileSize.y; 
-	float scale=255.0/area; 
+	const float scale=convert_float(255.0/area);	
     uint ires = (uint)convert_int_rte(scale*lutVal);
-	printf("scale:%f,ires:%d\t",scale,ires); 
-
-    //lut[(ty * tiles.x + tx) * srcStep + tid ] =
-       //convert_uchar(clamp(ires, (uint)0, (uint)255));
-		    lut[(ty * tiles.x + tx) * 256 + tid ] =
+	lut[(ty * tiles.x + tx) * 256 + tid] =
         convert_uchar(clamp(ires, (uint)0, (uint)255));
 }
 
@@ -145,60 +138,55 @@ __kernel void mapLut(__global __const uchar * src, const int srcStep,
     const int srcVal = src[mad24(y, srcStep, x )];
 
     float res = 0;
-
     res += lut[mad24(ty1 * tiles.x+ tx1, lutStep, srcVal)] * ((1.0f - xa) * (1.0f - ya));
     res += lut[mad24(ty1 * tiles.x + tx2, lutStep, srcVal)] * ((xa) * (1.0f - ya));
     res += lut[mad24(ty2 * tiles.x + tx1, lutStep, srcVal)] * ((1.0f - xa) * (ya));
     res += lut[mad24(ty2 * tiles.x + tx2, lutStep, srcVal)] * ((xa) * (ya));
 
+
     uint ires = (uint)convert_int_rte(res);
+	int idx=mad24(y, srcStep, x );
+	int s_idx=mad24(cols,rows,idx); 
+	int h_idx=mad24(cols,rows,s_idx); 
     dst[mad24(y, srcStep, x )] = convert_uchar(clamp(ires, (uint)0, (uint)255));
+	dst[s_idx]=src[s_idx];
+	dst[h_idx]=src[h_idx];
+	
 }
 
 __kernel void rgb2hsv(__global __const uchar * src, const int srcStep, __global uchar * dst,const int cols, const int rows)
 {
     const int x = get_global_id(0);
     const int y = get_global_id(1);
-
+   
     if (x >= cols || y >= rows)
-        return;
-	
-	int idx=mad24(y,srcStep*3,x); 
-	const int r = src[idx];
-	const int g=src[idx+1];
-	const int b=src[idx+2];
-	const float scale=255.f/360.f; 
-	
-	float h,s,v; 
-	const int maxv=max(r,max(g,b)); 
-	const int minv=min(r,min(g,b)); 
-	const int delt=maxv-minv; 
-	const float fDelt=60.0f/delt; 
-	
-	if(maxv==0)
-		s=0;
-	else 
-		s=delt/maxv; 
-	
-	v=maxv; 
-	if (maxv==minv)
-		h=0; 
-	else if(maxv==r)
-		h=(g-b)*fDelt;
-	else if(maxv==g)
-		h=(b-r)*fDelt+120.f;
-	else if(maxv==b)
-		h=(r-g)*fDelt+240.0f; 
-	if(h<0) 
-		h+=360.f; 
-	
-	dst[idx]=convert_uchar(h*scale); 
-	dst[idx+1]=convert_uchar(s*255.0f*0.8f); 
-	dst[idx+2]=convert_uchar(v); 
-	
+		return; 
+	int idx=mad24(y,srcStep*3,x*3); 
+	float r =convert_float(src[idx])/255.0;
+	float g=convert_float(src[idx+1])/255.0;
+    float b=convert_float(src[idx+2])/255.0;
+
+	float3 rgb=(float3)(r,g,b); 
+	float4 K = (float4)(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    float4 p = mix((float4)(rgb.zy, K.wz),(float4)(rgb.yz, K.xy), step(rgb.z, rgb.y));
+    float4 q = mix((float4)(p.xyw, rgb.x),(float4)(rgb.x, p.yzx), step(p.x, rgb.x));
+    float d = q.x - min(q.w, q.y);
+    float e = 1.0e-10;
+    float3 hsv=(float3)(fabs(q.z+(q.w-q.y)/(6.0 * d + e)),d/(q.x + e),q.x);
+	uchar3 HSV = convert_uchar3_sat(hsv*255);
+
+	uint frameSize=mad24(cols,rows,0); 
+	uint v_idx=mad24(y,srcStep,x); ; 
+	uint s_idx=frameSize+v_idx; 
+	uint h_idx=frameSize+s_idx; 
+
+	dst[h_idx]=HSV.x; 
+	dst[s_idx]=HSV.y; 
+	dst[v_idx]=HSV.z;  
+
 }
 
-__kernel void hsv2rgb(__global __const uchar* src, const int srcStep,__global uchar* dst,const int cols, const int rows )
+__kernel void hsv2rgb(__global uchar* src, const int srcStep,__global uchar* dst,const int cols, const int rows )
 {
 	const int tidx=get_global_id(0);
 	const int tidy=get_global_id(1); 
@@ -206,51 +194,28 @@ __kernel void hsv2rgb(__global __const uchar* src, const int srcStep,__global uc
 	if(tidx>=cols || tidy>=rows)
 		return; 
 	
-	int idx=mad24(tidy,srcStep*3,tidx); 
-	const float H =convert_float(src[idx]);
-	const float S =convert_float(src[idx+1]);
-	const float V=convert_float(src[idx+2]);
-	const float scale=1.412f; 
+	int frameSize=mad24(rows,cols,0); 
+	int v_idx=mad24(tidy,srcStep,tidx); 
+	int s_idx=frameSize+v_idx; 
+	int h_idx=frameSize+s_idx; 
 	
-
-	float _h = H*scale/60.f;
-	float s=S/255.f; 
-	float v=V/255.f; 
-	float R,G,B; 
-
-
-    int _hf = (int)floor(_h); 
-    int _hi = ((int)_h)%6; 
-    float _f = _h - _hf; 
-    
-    float _p = v* (1. -s); 
-    float _q = v* (1. - _f *s); 
-    float _t = v* (1. - (1. - _f)*s); 
-    
-    switch (_hi) 
-    { 
-      case 0: 
-	      R = 255.*v; G = 255.*_t; B = 255.*_p; 
-      break; 
-      case 1: 
-	      R = 255.*_q; G = 255.*v; B = 255.*_p; 
-      break; 
-      case 2: 
-	      R = 255.*_p; G = 255.*v; B = 255.*_t; 
-      break; 
-      case 3: 
-	      R = 255.*_p; G = 255.*_q; B = 255.*v; 
-      break; 
-      case 4: 
-	      R = 255.*_t; G = 255.*_p; B = 255.*v; 
-      break; 
-      case 5: 
-	      R = 255.*V; G = 255.*_p; B = 255.*_q; 
-      break; 
-    } 
+	  
+    float h =convert_float(src[h_idx])/255.0;
+	float s =convert_float(src[s_idx])/255.0;
+	float v=convert_float(src[v_idx])/255.0;
+	float3 hsv=(float3)(h,s,v);
+    float4 K = (float4)(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+	float3 t=(float3)(hsv.xxx + K.xyz); 
+    //float3 p = abs(fract(hsv.xxx + K.xyz) * 6.0 - K.www);
+	float3 p =fabs((t-trunc(t))*6.0 - K.www);
 	
-	dst[idx]=convert_uchar(R);
-	dst[idx+1]=convert_uchar(G);
-	dst[idx+2]=convert_uchar(B); 
+    float3 rgb=hsv.z * mix(K.xxx, clamp(p-K.xxx, 0.0, 1.0), hsv.y);
+	uchar3 RGB = convert_uchar3_sat(rgb*255);
+	
+	int idx=mad24(tidy,srcStep*3,tidx*3); 
+	dst[idx]=RGB.x; 
+	dst[idx+1]=RGB.y;
+	dst[idx+2]=RGB.z; 
+		 
 }
 	
