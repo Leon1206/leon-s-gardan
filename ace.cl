@@ -114,9 +114,9 @@ __kernel void mapLut(__global __const uchar * src, const int srcStep,
                         const int2 tileSize,
                         const int2 tiles)
 {
-    const int x = get_global_id(0);
-    const int y = get_global_id(1);
-	const int lutStep=256; 
+    int x = get_global_id(0);
+    int y = get_global_id(1);
+	int lutStep=256; 
 
     if (x >= cols || y >= rows)
         return;
@@ -154,19 +154,40 @@ __kernel void mapLut(__global __const uchar * src, const int srcStep,
 	
 }
 
-__kernel void rgb2hsv(__global __const uchar * src, const int srcStep, __global uchar * dst,const int cols, const int rows)
+__kernel void rgb2hsv(__global __const uchar * src, const int srcStep, __global uchar * dst,const int cols, const int frameSize,__global uchar *lut)
 {
     const int x = get_global_id(0);
     const int y = get_global_id(1);
-   
+   const int rows=frameSize/cols; 
+   //__global uchar hue[frameSize]; 
+
     if (x >= cols || y >= rows)
 		return; 
-	int idx=mad24(y,srcStep*3,x*3); 
-	float r =convert_float(src[idx])/255.0;
-	float g=convert_float(src[idx+1])/255.0;
-    float b=convert_float(src[idx+2])/255.0;
+	 
 
-	float3 rgb=(float3)(r,g,b); 
+	int idx=mad24(y,srcStep*3,x*3);
+	float r =convert_float(src[idx]);
+	float g=convert_float(src[idx+1]);
+    float b=convert_float(src[idx+2]);
+	//rgb2yuv and yuv2rgb
+	float3 rgb1=(float3)(r,g,b);
+	const float3 y_coeff=(float3)(0.299,0.587,0.114); 
+	const float3 u_coeff=(float3)(-0.1687,-0.3313,0.5); 
+	const float3 v_coeff=(float3)(0.5,-0.4178,-0.0831);
+	float3 yuv=(float3)(dot(rgb1,y_coeff),dot(rgb1,u_coeff),dot(rgb1,v_coeff)); 
+	yuv+=(float3)(0,128.0,128.0); 
+	
+	yuv-=(float3)(0,128.0,128.0); 
+	float3 r_coeff=(float3)(1,0,1.402); 
+	float3 g_coeff=(float3)(1,-0.34414,-0.71414); 
+	float3 b_coeff=(float3)(1,1.772,0); 
+	float3 rgb=(float3)(dot(yuv,r_coeff),dot(yuv,g_coeff),dot(yuv,b_coeff))/255.0; 
+	
+	
+	//float r =convert_float(src[idx])/255.0;
+	//float g=convert_float(src[idx+1])/255.0;
+    //float b=convert_float(src[idx+2])/255.0;
+	//float3 rgb=(float3)(r,g,b); 
 	float4 K = (float4)(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
     float4 p = mix((float4)(rgb.zy, K.wz),(float4)(rgb.yz, K.xy), step(rgb.z, rgb.y));
     float4 q = mix((float4)(p.xyw, rgb.x),(float4)(rgb.x, p.yzx), step(p.x, rgb.x));
@@ -175,13 +196,19 @@ __kernel void rgb2hsv(__global __const uchar * src, const int srcStep, __global 
     float3 hsv=(float3)(fabs(q.z+(q.w-q.y)/(6.0 * d + e)),d/(q.x + e),q.x);
 	uchar3 HSV = convert_uchar3_sat(hsv*255);
 
-	uint frameSize=mad24(cols,rows,0); 
+	
 	uint v_idx=mad24(y,srcStep,x); ; 
+	//hue[v_idx]=0; 
+	//barrier(CLK_GLOBAL_MEM_FENCE);
+
+	//hue[v_idx]=HSV.x; 
+	//barrier(CLK_GLOBAL_MEM_FENCE);
+
 	uint s_idx=frameSize+v_idx; 
 	uint h_idx=frameSize+s_idx; 
 
 	dst[h_idx]=HSV.x; 
-	dst[s_idx]=HSV.y; 
+	dst[s_idx]=lut[HSV.y]; 
 	dst[v_idx]=HSV.z;  
 
 }
